@@ -4,6 +4,8 @@ langgraph
 langchain
 python-dotenv
 python-multipart
+httpx
+aiofiles
 requests
 cryptography
 httpx

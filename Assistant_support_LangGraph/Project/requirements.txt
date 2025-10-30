@@ -5,6 +5,8 @@ langchain
 langchain-core
 python-dotenv
 python-multipart
+httpx
+aiofiles
 requests
 cryptography
 httpx

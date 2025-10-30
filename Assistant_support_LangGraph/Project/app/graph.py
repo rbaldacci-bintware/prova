@@ -120,13 +120,13 @@ def route_to_next_step(state: GraphState) -> str:
 # ===== WRAPPER PER I NODI =====
 
 def create_tracked_node(node_name: str, node_func):
-    """Crea un wrapper che traccia l'esecuzione e gestisce gli errori"""
-    def wrapped(state: GraphState) -> Dict[str, Any]:
+    """Crea un wrapper async che traccia l'esecuzione"""
+    async def wrapped(state: GraphState) -> Dict[str, Any]:  # ✅ AGGIUNTO async
         logger.info(f"🔷 Esecuzione nodo: {node_name}")
         trace = state.get("execution_trace", [])
         
         try:
-            result = node_func(state)
+            result = await node_func(state)  # ✅ AGGIUNTO await
             
             trace_copy = trace.copy()
             trace_copy.append(node_name)
@@ -135,7 +135,7 @@ def create_tracked_node(node_name: str, node_func):
             current_index = state.get("current_step_index", 0)
             result["current_step_index"] = current_index + 1
             
-            logger.info(f"✅ Nodo {node_name} completato con successo")
+            logger.info(f"✅ Nodo {node_name} completato")
             return result
             
         except Exception as e:

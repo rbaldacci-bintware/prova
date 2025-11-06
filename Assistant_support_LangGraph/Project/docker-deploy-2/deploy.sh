@@ -1,0 +1,58 @@
+# ============================================
+# deploy.sh - Script per deployare il container
+# ============================================
+
+echo "🚀 Deploying LangGraph API..."
+
+# Controlla se il file .env criptato esiste
+ENV_FILE="/var/www/webapi/langgraph-api/config-2/LNX-CLKS004-CLKAPP792.env"
+if [ ! -f "$ENV_FILE" ]; then
+    echo "⚠️  ATTENZIONE: File .env criptato non trovato in $ENV_FILE"
+    echo "   Assicurati di copiarlo prima di continuare!"
+    read -p "Vuoi continuare comunque? (y/n) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        exit 1
+    fi
+fi
+
+# Imposta la chiave di cifratura (IMPORTANTE: sostituisci con la tua chiave reale)
+#export CHIAVE_CIFRATURA=""
+
+# Ferma e rimuovi container esistente se presente
+echo "🔄 Fermando container esistente..."
+docker compose down
+
+# Avvia il nuovo container
+echo "🔥 Avviando nuovo container..."
+docker compose up -d
+
+# Attendi che il container sia healthy
+echo "⏳ Attendendo che l'API sia pronta..."
+sleep 5
+
+CONTAINER_NAME="langgraph-api-2"
+
+# Controlla lo stato
+if docker ps | grep -q langgraph-api-2; then
+    echo "✅ Container avviato con successo!"
+    
+    # Mostra i logs
+    echo "📜 Ultimi log del container:"
+    docker logs --tail 20 "$CONTAINER_NAME"
+    
+    # Test dell'endpoint
+    echo "🧪 Test endpoint salute:"
+    curl -s http://localhost:8001/ | jq . || echo "API raggiungibile su http://localhost:8001"
+else
+    echo "❌ Container non avviato!"
+    echo "📜 Logs di errore:"
+    docker logs langgraph-api
+    exit 1
+fi
+
+echo "✨ Deploy completato!"
+echo "📍 API disponibile su: http://localhost:8001"
+echo "📊 Per vedere i logs: docker logs -f $CONTAINER_NAME""
+echo "🛑 Per fermare: docker compose down"
+

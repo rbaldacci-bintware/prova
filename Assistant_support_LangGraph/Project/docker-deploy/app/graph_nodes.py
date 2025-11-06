@@ -1,9 +1,7 @@
-# app/graph_nodes.py - VERSIONE ASYNC
-import os
+# app/graph_nodes.py - VERSIONE REFACTORED (NO URL HARDCODED)
 import json
 import logging
-import asyncio  # ✅ NUOVO
-import httpx    # ✅ NUOVO
+import asyncio
 import aiofiles
 from .state import GraphState
 from .services import PersistenceClient, AudioTools
@@ -12,50 +10,8 @@ from .internal_api_client import InternalApiClient
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# URL delle API
-API_URL = os.getenv("GOOGLE_API_URL", "http://localhost:5020")
-FILE_API_URL = os.getenv("FileApiBaseUrl", "http://localhost:5019")
-
-# --- FUNZIONE HELPER ASYNC ---
-
-async def mark_stretch_completed(
-    conversation_id: str, 
-    api_key: str, 
-    base_url: str, 
-    stretch_type: str
-) -> bool:
-    """Marca uno stretch come completato (async)"""
-    if not conversation_id:
-        logger.warning(f"[{stretch_type}] conversation_id mancante, skip marcatore")
-        return False
-    
-    url = f"{base_url}/api/InternalConversazione/UpdateConversazioneStretchCompleted"
-    params = {"convName": conversation_id, "ind_type": stretch_type}
-    headers = {"X-Api-Key": api_key}
-    
-    try:
-        logger.info(f"[{stretch_type}] Inserimento marcatore per conversazione: {conversation_id}")
-        
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.put(url, params=params, headers=headers)
-        
-        if response.status_code == 200:
-            logger.info(f"✅ [{stretch_type}] Marcatore inserito con successo")
-            return True
-        elif response.status_code == 404:
-            logger.error(f"❌ [{stretch_type}] Conversazione non trovata (404)")
-            return False
-        else:
-            logger.error(f"❌ [{stretch_type}] Errore: {response.status_code}")
-            return False
-            
-    except httpx.TimeoutException:
-        logger.error(f"⏱️ [{stretch_type}] Timeout durante inserimento marcatore")
-        return False
-    except Exception as e:
-        logger.error(f"❌ [{stretch_type}] Errore: {str(e)}")
-        return False
-
+# ✅ RIMOSSO: Non più URL hardcoded qui
+# Tutto gestito tramite InternalApiClient
 
 # --- NODI ASYNC ---
 
@@ -64,13 +20,13 @@ async def conversation_reconstruction_node(state: GraphState) -> dict:
     print("--- NODO 1: RICOSTRUZIONE CONVERSAZIONE (ASYNC) ---")
     
     try:
+        config = state.get("config", {})
+        api_client = InternalApiClient(config)
+        
         # Flusso principale: storage
         if state.get("location") and state.get("inbound") and state.get("outbound"):
-            config = state.get("config", {})
-            api_client = InternalApiClient(config)
             audio_tools = AudioTools(api_client)
             
-            # ✅ Chiamata async
             response = await audio_tools.reconstruct_from_storage(
                 location=state["location"],
                 inbound_filename=state["inbound"],
@@ -78,13 +34,11 @@ async def conversation_reconstruction_node(state: GraphState) -> dict:
                 project_name=state["project_name"]
             )
             
-            # Marcatore async
+            # Marcatore async (usando metodo centralizzato)
             conversation_id = state.get("conversation_id")
             if conversation_id:
-                await mark_stretch_completed(
+                await api_client.mark_stretch_completed(
                     conversation_id=conversation_id,
-                    api_key=api_client.api_key,
-                    base_url=api_client.base_url,
                     stretch_type="TRASCRIZIONE"
                 )
             
@@ -96,7 +50,7 @@ async def conversation_reconstruction_node(state: GraphState) -> dict:
                 "transcript_status": "CORRETTO"
             }
         
-        # Flusso alternativo per test
+        # Flusso alternativo per test (file locali)
         elif len(state.get("audio_file_paths", [])) == 2:
             project_name = state.get("project_name")
             if not project_name:
@@ -105,37 +59,31 @@ async def conversation_reconstruction_node(state: GraphState) -> dict:
             params = {"project_name": project_name}
             files = []
             
-            # ✅ Lettura file async
-            
+            # Lettura file async
             for file_path in state["audio_file_paths"]:
                 async with aiofiles.open(file_path, "rb") as f:
+                    import os
                     ext = os.path.splitext(file_path)[1][1:]
                     mime_type = f"audio/{ext}"
                     file_content = await f.read()
                     files.append(('files', (os.path.basename(file_path), file_content, mime_type)))
             
-            # ✅ POST async
+            # ✅ USA URL CENTRALIZZATO
+            url = f"{api_client.google_api_url}/api/Audio/reconstruct"
+            
+            import httpx
             async with httpx.AsyncClient(timeout=180.0) as client:
-                response = await client.post(
-                    f"{API_URL}/api/Audio/reconstruct",
-                    files=files,
-                    params=params
-                )
+                response = await client.post(url, files=files, params=params)
             
             if response.status_code == 200:
                 data = response.json()
                 
                 conversation_id = state.get("conversation_id")
                 if conversation_id:
-                    config = state.get("config", {})
-                    if config:
-                        api_client = InternalApiClient(config)
-                        await mark_stretch_completed(
-                            conversation_id=conversation_id,
-                            api_key=api_client.api_key,
-                            base_url=api_client.base_url,
-                            stretch_type="TRASCRIZIONE"
-                        )
+                    await api_client.mark_stretch_completed(
+                        conversation_id=conversation_id,
+                        stretch_type="TRASCRIZIONE"
+                    )
                 
                 return {
                     "transcript": data["reconstructedTranscript"],
@@ -168,7 +116,6 @@ async def persistence_node(state: GraphState) -> dict:
     api_client = InternalApiClient(config)
     persistence_client = PersistenceClient(api_client)
     
-    # ✅ Chiamata async
     result = await persistence_client.save_conversation(
         conversation_id=state["conversation_id"],
         transcript=state["transcript"],
@@ -177,6 +124,7 @@ async def persistence_node(state: GraphState) -> dict:
     
     logger.info(f"Persistenza: Status={result.status}, Id={result.id}")
     return {"persistence_result": f"{result.status}:{result.id}"}
+
 
 async def email_node(state: GraphState) -> dict:
     """Nodo 3 ASYNC: Invia email tramite API esterna"""
@@ -189,9 +137,6 @@ async def email_node(state: GraphState) -> dict:
     
     config = state.get("config", {})
     api_client = InternalApiClient(config)
-    api_key = api_client.api_key
-    
-    EMAIL_API_URL = os.getenv("EMAIL_API_URL", "http://localhost:5007")
     
     # Prepara scope
     scope_value = state.get("scope", [])
@@ -268,58 +213,19 @@ async def email_node(state: GraphState) -> dict:
         }
     }
     
-    headers = {
-        'accept': 'text/plain',
-        'X-Api-Key': api_key,
-        'Content-Type': 'application/json'
-    }
+    # ✅ USA METODO CENTRALIZZATO
+    result = await api_client.send_email_via_graph(graph_payload)
     
-    try:
-        logger.info(f"Invio email tramite API: {EMAIL_API_URL}/api/Graph/run")
-        
-        # ✅ POST async
-        async with httpx.AsyncClient(timeout=180.0) as client:
-            response = await client.post(
-                f"{EMAIL_API_URL}/api/Graph/run",
-                json=graph_payload,
-                headers=headers
-            )
-        
-        if response.status_code == 200:
-            logger.info("✅ Email inviata con successo")
-            return {
-                "email_result": "SUCCESS",
-                "email_response": response.text
-            }
-        else:
-            logger.error(f"❌ Errore invio email: {response.status_code}")
-            return {
-                "email_result": f"ERROR_{response.status_code}",
-                "email_error": response.text
-            }
-            
-    except httpx.TimeoutException:
-        logger.error("⏱️ Timeout durante l'invio dell'email")
-        return {"email_result": "TIMEOUT"}
-    except Exception as e:
-        logger.error(f"❌ Errore invio email: {str(e)}")
-        return {"email_result": "ERROR", "email_error": str(e)}
-
-
-async def _download_file(location: str, file_name: str, api_key: str) -> bytes:
-    """Helper async per scaricare un file"""
-    url = f"{FILE_API_URL}/api/files/{location}/{file_name}"
-    headers = {'Accept': 'application/octet-stream', 'X-Api-Key': api_key}
-    
-    try:
-        logger.info(f"Download KB file: {file_name}")
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            return response.content
-    except Exception as e:
-        logger.error(f"Errore download file {file_name}: {e}")
-        return None
+    if result and result.get("status") == "SUCCESS":
+        return {
+            "email_result": "SUCCESS",
+            "email_response": result.get("response")
+        }
+    else:
+        return {
+            "email_result": result.get("status", "ERROR"),
+            "email_error": result.get("error", "Unknown error")
+        }
 
 
 async def analysis_node(state: GraphState) -> dict:
@@ -333,7 +239,6 @@ async def analysis_node(state: GraphState) -> dict:
         
         config = state.get("config", {})
         api_client = InternalApiClient(config)
-        internal_api_key = api_client.api_key
         
         analysis_prompt = state.get("analysis_prompt")
         
@@ -353,7 +258,6 @@ async def analysis_node(state: GraphState) -> dict:
         
         knowledge_base_files_to_download = state.get("knowledge_base_files", [])
         
-        # ✅ Validazione: knowledge_base_files deve sempre essere pieno
         if not knowledge_base_files_to_download:
             return {
                 "error": "MISSING_KNOWLEDGE_BASE_FILES",
@@ -361,7 +265,7 @@ async def analysis_node(state: GraphState) -> dict:
                 "analysis_status": "ERRORE"
             }
         
-        # ✅ Discriminante: verificare se location o fileName è "none"
+        # Discriminante: verificare se location o fileName è "none"
         use_kb_analysis = True
         for file_info in knowledge_base_files_to_download:
             location = file_info.get("location")
@@ -381,12 +285,11 @@ async def analysis_node(state: GraphState) -> dict:
         if use_kb_analysis:
             logger.info(f"📚 ANALISI CON KB ({len(knowledge_base_files_to_download)} file)")
             
-            # ✅ Download parallelo async di tutti i file KB
+            # ✅ Download parallelo usando metodo centralizzato
             download_tasks = [
-                _download_file(
+                api_client.download_file(
                     file_info.get("location"),
-                    file_info.get("fileName"),
-                    internal_api_key
+                    file_info.get("fileName")
                 )
                 for file_info in knowledge_base_files_to_download
             ]
@@ -414,13 +317,12 @@ async def analysis_node(state: GraphState) -> dict:
                 files_to_upload.append(('ListaKnowledgeBase', (file_name, file_bytes, 'application/pdf')))
             files_to_upload.append(('TrascrizioneFile', ('trascrizione.txt', transcript_content.encode('utf-8'), 'text/plain')))
             
-            # ✅ POST async con KB
+            # ✅ USA URL CENTRALIZZATO
+            url = f"{api_client.google_api_url}/api/GeminiTextGeneration/analyze-file"
+            
+            import httpx
             async with httpx.AsyncClient(timeout=180.0) as client:
-                response = await client.post(
-                    f"{API_URL}/api/GeminiTextGeneration/analyze-file",
-                    data=form_data,
-                    files=files_to_upload
-                )
+                response = await client.post(url, data=form_data, files=files_to_upload)
         else:
             logger.info("📄 ANALISI SOLO TRASCRIZIONE (KB file invalidi)")
             
@@ -428,13 +330,12 @@ async def analysis_node(state: GraphState) -> dict:
                 ('TrascrizioneFile', ('trascrizione.txt', transcript_content.encode('utf-8'), 'text/plain'))
             ]
             
-            # ✅ POST async senza KB
+            # ✅ USA URL CENTRALIZZATO
+            url = f"{api_client.google_api_url}/api/GeminiTextGeneration/analyze-transcript-only"
+            
+            import httpx
             async with httpx.AsyncClient(timeout=180.0) as client:
-                response = await client.post(
-                    f"{API_URL}/api/GeminiTextGeneration/analyze-transcript-only",
-                    data=form_data,
-                    files=files_to_upload
-                )
+                response = await client.post(url, data=form_data, files=files_to_upload)
         
         # Elaborazione risposta
         if response.status_code == 200:
@@ -453,13 +354,11 @@ async def analysis_node(state: GraphState) -> dict:
             
             logger.info(f"✅ Analisi completata. Tokens: {tokens_used}")
             
-            # Marcatore async
+            # Marcatore async (usando metodo centralizzato)
             conversation_id = state.get("conversation_id")
             if conversation_id:
-                await mark_stretch_completed(
+                await api_client.mark_stretch_completed(
                     conversation_id=conversation_id,
-                    api_key=internal_api_key,
-                    base_url=api_client.base_url,
                     stretch_type="ANALISI"
                 )
             
@@ -482,13 +381,11 @@ async def analysis_node(state: GraphState) -> dict:
             "details": str(e),
             "analysis_status": "ERRORE"
         }
-    
+
+
 async def suggestions_node(state: GraphState) -> dict:
     """Nodo 5 ASYNC: Estrae analisi e suggerimenti"""
     print("--- NODO 5: ESTRAZIONE DATI (ASYNC) ---")
-    
-    # Questo nodo è solo elaborazione dati, nessuna I/O
-    # Ma lo rendiamo async per uniformità
     
     full_analysis = state.get("full_analysis", {})
     
@@ -531,7 +428,7 @@ async def save_analysis_node(state: GraphState) -> dict:
     api_client = InternalApiClient(config)
     persistence_client = PersistenceClient(api_client)
 
-    # ✅ Salvataggio parallelo async di ANALISI e SUGGERIMENTI
+    # Salvataggio parallelo async di ANALISI e SUGGERIMENTI
     analysis_payload = {
         "fase1_analisi_cluster": clusters,
         "fase2_analisi_interazione": interaction,

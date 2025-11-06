@@ -1,17 +1,18 @@
-# app/workflows/email_only_nodes.py
+# app/workflows/email_only_nodes.py - VERSIONE REFACTORED (NO URL HARDCODED)
 """
-Esempio di workflow alternativo: invio email senza processing completo.
+Workflow alternativo: invio email senza processing completo.
 Utile per re-inviare email o inviare notifiche su conversazioni già processate.
 """
-import os
 import json
 import logging
-import httpx  # ✅ NUOVO
+import httpx
 from ..state import GraphState
 from ..internal_api_client import InternalApiClient
 
 logger = logging.getLogger(__name__)
-EMAIL_API_URL = os.getenv("EMAIL_API_URL", "http://localhost:5007")
+
+# ✅ RIMOSSO: EMAIL_API_URL hardcoded
+# Ora gestito tramite InternalApiClient
 
 
 async def load_existing_transcript_node(state: GraphState) -> dict:
@@ -29,6 +30,7 @@ async def load_existing_transcript_node(state: GraphState) -> dict:
     config = state.get("config", {})
     api_client = InternalApiClient(config)
     
+    # ✅ USA URL CENTRALIZZATO
     endpoint = f"{api_client.base_url}/api/internal/GetConversation/{conversation_id}"
     
     try:
@@ -94,30 +96,20 @@ async def quick_email_node(state: GraphState) -> dict:
         }
     }
     
-    headers = {
-        'accept': 'text/plain',
-        'X-Api-Key': api_client.api_key,
-        'Content-Type': 'application/json'
-    }
+    # ✅ USA METODO CENTRALIZZATO
+    result = await api_client.send_email_via_graph(graph_payload, timeout=30.0)
     
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{EMAIL_API_URL}/api/Graph/run",
-                json=graph_payload,
-                headers=headers
-            )
-        
-        if response.status_code == 200:
-            logger.info("✅ Email inviata")
-            return {"email_result": "SUCCESS", "email_response": response.text}
-        else:
-            logger.error(f"Errore: {response.status_code}")
-            return {"email_result": f"ERROR_{response.status_code}"}
-            
-    except Exception as e:
-        logger.error(f"Eccezione: {str(e)}")
-        return {"email_result": "ERROR", "email_error": str(e)}
+    if result and result.get("status") == "SUCCESS":
+        return {
+            "email_result": "SUCCESS",
+            "email_response": result.get("response")
+        }
+    else:
+        return {
+            "email_result": result.get("status", "ERROR"),
+            "email_error": result.get("error", "Unknown error")
+        }
+
 
 async def notification_node(state: GraphState) -> dict:
     """Invia notifiche generiche (async)"""
@@ -132,6 +124,7 @@ async def notification_node(state: GraphState) -> dict:
         "notification_result": "SUCCESS",
         "notification_type": notification_type
     }
+
 
 # Registra i nodi di questo modulo
 WORKFLOW_NODES = {
